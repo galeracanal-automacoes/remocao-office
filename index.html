@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Licenças do Office a remover</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{color-scheme:light dark;--bg:#f5f6f8;--surface:#fff;--text:#1b2430;--muted:#5d6978;--line:#d8dde4;--accent:#1f5fbf;--accent-text:#fff;--ok:#1d7a46;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#14181e;--surface:#1d232b;--text:#e8ecf1;--muted:#9aa5b3;--line:#323b46;--accent:#6aa3f5;--accent-text:#0d1620;--ok:#5fcf8f;--err:#ff8a80}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:24px 16px}
+main{max-width:860px;margin:0 auto}
+h1{font-size:1.5rem;margin:0 0 4px}
+p.sub{margin:0 0 24px;color:var(--muted)}
+.drops{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media (max-width:640px){.drops{grid-template-columns:1fr}}
+label.drop{display:block;background:var(--surface);border:2px dashed var(--line);border-radius:10px;padding:20px;cursor:pointer;transition:border-color .15s}
+label.drop:hover,label.drop:focus-within,label.drop.over{border-color:var(--accent)}
+label.drop.ok{border-style:solid;border-color:var(--ok)}
+label.drop b{display:block;margin-bottom:2px}
+label.drop span{color:var(--muted);font-size:.9rem;word-break:break-all}
+input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
+.actions{margin:20px 0;display:flex;gap:12px;flex-wrap:wrap}
+button{font:inherit;font-weight:600;border:0;border-radius:8px;padding:10px 18px;background:var(--accent);color:var(--accent-text);cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.sec{background:transparent;color:var(--text);border:1px solid var(--line)}
+button:focus-visible,label.drop:focus-within{outline:3px solid var(--accent);outline-offset:2px}
+#msg{margin:0 0 16px;min-height:1.5em}
+#msg.err{color:var(--err)}#msg.ok{color:var(--ok)}
+.tablewrap{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+tr:last-child td{border-bottom:0}
+footer{margin-top:24px;color:var(--muted);font-size:.85rem}
+</style>
+</head>
+<body>
+<main>
+  <h1>Licenças do Office a remover</h1>
+  <p class="sub">Envie as duas planilhas. Tudo é processado no seu navegador; nenhum arquivo sai do seu computador.</p>
+
+  <div class="drops">
+    <label class="drop" id="dropUsers">
+      <b>Planilha de usuários</b>
+      <span id="nameUsers">Clique ou arraste o arquivo .xlsx (colunas: Display name, User principal name, Title, Licenses)</span>
+      <input type="file" id="fileUsers" accept=".xlsx,.xls,.csv">
+    </label>
+    <label class="drop" id="dropAdp">
+      <b>Planilha ADP</b>
+      <span id="nameAdp">Clique ou arraste o arquivo .xlsx (colunas: MATR, Status)</span>
+      <input type="file" id="fileAdp" accept=".xlsx,.xls,.csv">
+    </label>
+  </div>
+
+  <div class="actions">
+    <button id="run" disabled>Gerar lista</button>
+    <button id="download" class="sec" disabled>Baixar licencas_a_remover.xlsx</button>
+  </div>
+
+  <p id="msg" role="status"></p>
+  <div class="tablewrap" id="result" hidden></div>
+
+  <footer>Regra: cruza Title (usuários) com MATR (ADP), ignora quem está “Unlicensed” e mantém Status D ou I.</footer>
+</main>
+
+<script>
+const COLS = ['display name','user principal name','title','licenses'];
+const files = {users:null, adp:null};
+let output = [];
+
+const $ = id => document.getElementById(id);
+const msg = (t, c='') => { $('msg').textContent = t; $('msg').className = c; };
+const norm = v => String(v ?? '').trim().toUpperCase();
+
+function setup(inputId, dropId, nameId, key){
+  const input = $(inputId), drop = $(dropId);
+  const take = f => {
+    if(!f) return;
+    files[key] = f;
+    $(nameId).textContent = f.name;
+    drop.classList.add('ok');
+    $('run').disabled = !(files.users && files.adp);
+  };
+  input.addEventListener('change', () => take(input.files[0]));
+  ['dragenter','dragover'].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault(); drop.classList.add('over');}));
+  ['dragleave','drop'].forEach(e => drop.addEventListener(e, ev => {ev.preventDefault(); drop.classList.remove('over');}));
+  drop.addEventListener('drop', ev => take(ev.dataTransfer.files[0]));
+}
+setup('fileUsers','dropUsers','nameUsers','users');
+setup('fileAdp','dropAdp','nameAdp','adp');
+
+async function readSheet(file){
+  const wb = XLSX.read(await file.arrayBuffer(), {type:'array'});
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], {defval:''});
+  // padroniza nomes de colunas (trim + minúsculas)
+  return rows.map(r => Object.fromEntries(Object.entries(r).map(([k,v]) => [k.trim().toLowerCase(), v])));
+}
+
+$('run').addEventListener('click', async () => {
+  try{
+    msg('Processando…');
+    const [users, adp] = await Promise.all([readSheet(files.users), readSheet(files.adp)]);
+
+    if(!adp.length || !('matr' in adp[0]) || !('status' in adp[0]))
+      throw new Error("A planilha ADP precisa ter as colunas 'MATR' e 'Status'.");
+    const missing = COLS.filter(c => !users.length || !(c in users[0]));
+    if(missing.length)
+      throw new Error("Faltam colunas na planilha de usuários: " + missing.join(', ') + ".");
+
+    // MATR -> lista de status (equivale ao merge how='left' do pandas)
+    const adpMap = new Map();
+    adp.forEach(r => {
+      const k = norm(r.matr);
+      if(!adpMap.has(k)) adpMap.set(k, []);
+      adpMap.get(k).push(norm(r.status));
+    });
+
+    output = [];
+    users.forEach(u => {
+      if(String(u.licenses ?? '').toLowerCase().includes('unlicensed')) return;
+      const title = norm(u.title);
+      (adpMap.get(title) || []).forEach(status => {
+        if(status === 'D' || status === 'I'){
+          output.push({
+            'display name': u['display name'],
+            'user principal name': u['user principal name'],
+            'title': title,
+            'licenses': u.licenses,
+            'ADP': status
+          });
+        }
+      });
+    });
+
+    render();
+    $('download').disabled = !output.length;
+    msg(output.length ? `${output.length} licença(s) a remover.` : 'Nenhum registro encontrado com ADP = D ou I.', output.length ? 'ok' : '');
+  }catch(e){
+    msg(e.message, 'err');
+  }
+});
+
+function render(){
+  const box = $('result');
+  if(!output.length){ box.hidden = true; return; }
+  const heads = Object.keys(output[0]);
+  const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  const rows = output.slice(0,200).map(r => '<tr>' + heads.map(h => `<td>${esc(r[h])}</td>`).join('') + '</tr>').join('');
+  box.innerHTML = `<table><thead><tr>${heads.map(h=>`<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`;
+  box.hidden = false;
+}
+
+$('download').addEventListener('click', () => {
+  const ws = XLSX.utils.json_to_sheet(output);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Licenças');
+  XLSX.writeFile(wb, 'licencas_a_remover.xlsx');
+});
+</script>
+</body>
+</html>
